@@ -32,6 +32,7 @@ dat <- readRDS("data/ukr_h1_2022")
 
 #     b) Pre-process the data.frame.
 dat$body_text <- str_replace(dat$body_text, "\u2022.+$", "")
+dat <- dat[-which(grepl("briefing", dat$headline) == TRUE),]
 
 corp <- corpus(dat, 
                docid_field = "headline",
@@ -42,6 +43,9 @@ prepped_toks <- prep_toks(corp) # basic token cleaning
 collocations <- get_coll(prepped_toks) # get collocations
 toks <- tokens_compound(prepped_toks, pattern = collocations[collocations$z > 10,]) # replace collocations
 toks <- tokens_remove(tokens(toks), "") # let's also remove the whitespace placeholders
+
+toks <- tokens_remove(toks, c("said",
+                              "say"))
 
 toks <- tokens(toks, 
                remove_numbers = TRUE,
@@ -76,7 +80,7 @@ modelFit <- stm(documents = stmdfm$documents,
 saveRDS(modelFit, "data/modelFit")
 
 # Load model (in case your computer is running slow...)
-#modelFit <- readRDS("data/modelFit")
+modelFit <- readRDS("data/modelFit")
 
 ## 3. Interpret Topic model 
 # Inspect most probable terms in each topic
@@ -215,7 +219,7 @@ plot.estimateEffect(x = estprop,
                     #xlim = c(-.05, .05),
                     labeltype = "custom",
                     custom.labels = custom_labels,
-                    printlegend = T) # Toggle this to see January
+                    printlegend = F) # Toggle this to see January
 
 ## 9. Using data to determine k
 ?searchK
@@ -227,7 +231,7 @@ kResult <- searchK(documents = stmdfm$documents,
                    prevalence = ~ section_name + s(month(date)))
                    #cores = 6) # This no longer works on windows 10 :(
 
-#kResult <- readRDS("data/kResult")                   
+kResult <- readRDS("data/kResult")                   
 plot(kResult)
 
 ## 10. Refine
