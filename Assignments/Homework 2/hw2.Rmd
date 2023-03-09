@@ -1,0 +1,985 @@
+---
+title: 'POP77022: Programming Exercise 2'
+author: "Daniel Murray"
+date: "March 3rd, 2023"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Overview
+
+The second homework assignment covers concepts and methods from Weeks 3 and 4 (Supervised and unsupervised text classification).
+
+Please provide your answers as code and text in the RMarkdown file provided. When completed, first knit the file as an HTML file and then save the resulting HTML document in PDF format. Upload the PDF to Turnitin.
+
+## Supervised text classification of Yelp reviews (50 points)
+
+We begin by analyzing a sample from the Zhang, Zhao & LeCun (2015) dataset of Yelp reviews which have been coded for sentiment polarity. The authors of the dataset have created a `sentiment` variable where a value of 1 indicates a "negative" review (1 or 2 stars), and a 2 means a "positive" review (3 or 4 stars).
+
+First, bring in the reviews dataset from the `data` directory.
+
+```{r, message=FALSE, warning=FALSE}
+setwd(getwd())
+data <- read.csv("./data/yelp_data_small.csv", 
+                 stringsAsFactors=FALSE,
+                 encoding = "utf-8")
+
+# Load required libraries
+library(quanteda)
+library(quanteda.textmodels)
+library(quanteda.textstats)
+library(caret)
+library(stringi)
+library(ggplot2)
+library('MLmetrics')
+library('doParallel')
+library(textstem)
+```
+
+1.  Create a `quanteda` corpus object from this matrix and inspect its attributes.
+    -   What is the overall probability of the "positive" class in the corpus? Are the classes balanced? (Hint: Use the `table()` function)
+
+```{r}
+# Convert dataframe to corpus
+corp <- quanteda::corpus(data,
+                         text_field = "text")
+
+# Inspect corpus attributes
+print(summary(corp,5))
+
+# Inspect sentiment frequencies of corpus
+print(table(corp$sentiment))
+
+# Calculate probability of "positive" class
+cat("\n","Probability of 'positive' class: ", round(length(corp[corp$sentiment == "pos"])/length(corp),2))
+```
+
+Answer: The classes are broadly balanced with a 49%/51% positive/negative split.
+
+2.  Create a document-feature matrix using this corpus. Process the text so as to increase predictive power of the features. Justify each of your processing decisions in the context of the supervised classification task.
+
+```{r}
+# Remove line breaks from corpus
+corp <- gsub("\\\\n", "", corp)
+
+# Inspect first five corpus documents
+head(corp, 5)
+
+# Tokenise text, removing punctuation/symbols/URLs, etc. and retaining docvars
+toks <- quanteda::tokens(corp, 
+                         include_docvars = TRUE,
+                         remove_numbers = TRUE,
+                         remove_punct = TRUE,
+                         remove_symbols = TRUE,
+                         remove_hyphens = TRUE,
+                         remove_separators = TRUE,
+                         remove_url = TRUE)
+
+# Convert tokens to lowercase
+toks <- tokens_tolower(toks)
+
+# Create list of stopwords and remove these from tokens, retaining whitespaces in place of removed stopwords
+stop_list <- stopwords("english")
+toks <- tokens_remove(toks, stop_list, padding=TRUE)
+
+# Identify trigram collocations
+trigrams <- textstat_collocations(toks, 
+                                  method = "lambda",
+                                  size = 3,
+                                  min_count = 5,
+                                  smoothing = 0.5)
+
+# Create list of trigrams of interest (z-score > 3)
+trigrams <- trigrams[trigrams$z > 3,]
+
+# Identify bigram collocations
+bigrams <- textstat_collocations(toks, 
+                                 method = "lambda",
+                                 size = 2,
+                                 min_count = 20,
+                                 smoothing = 0.5)
+
+# Create list of bigrams of interest (z-score > 30)
+bigrams <- bigrams[bigrams$z > 30,]
+
+# Compile a list of collocations to keep
+keep_coll_list <- rbind(trigrams, bigrams)
+
+# Merge collocations with tokens and remove whitespaces
+toks_col <- tokens_compound(toks, 
+                            pattern = keep_coll_list)
+toks_col <- tokens_remove(toks_col, "")
+
+# Create dfm
+dfm <- dfm(toks_col)
+
+# Check term keyness by class group
+dfm_keyness <- dfm_group(dfm, groups = sentiment)
+keyness_stat <- textstat_keyness(dfm_keyness, target = "pos")
+
+# Compile list of most predictive features
+high_key_features <- keyness_stat[order(keyness_stat$p),]
+
+# Compile list of features with low predictive power
+low_key_features <- keyness_stat[keyness_stat$p > 0.05,]
+
+# Remove features with low predictive power from dfm
+dfm <- dfm_remove(dfm, pattern = low_key_features$feature)
+
+# Weight dfm
+dfm <- dfm_tfidf(dfm)
+```
+Answer:
+
+<Justification of Pre-Processing Decisions>
+
+In order to reduce dimensionality and noise and increase the predictive power of the resultant features, the following tasks were performed:
+
+- Removal of line breaks
+- Removal of punctuation/symbols/hyphens/URLs
+- Lowercasing of tokens
+- Removal of stopwords
+
+Trigrams and bigrams were identified with respective minimum frequencies to reduce dimensionality. Collocations to keep were selected using a threshold of z > 3 (trigrams) and z > 30 (bigrams) as these values were both statistically robust and around the point where collocations appeared to stop exhibiting any potential predictive power warranting inclusion from a theoretical point of view.
+
+After creation of the dfm, key features for each class were identified. Features with a p-value > 0.05 were removed as these were deemed to have little predictive power. This would further reduce dimensionality and noise, making the resulting model more efficient and effective.
+
+Lemmatisation was not performed in order to retain docvars. Stemming and trimming were not performed in order to retain as many features with high predictive power as possible prior to calculation of keyness and subsequent feature removal (as outlined above). 
+
+3.  Now that you have your document-feature matrix, use the `caret` library to create a training set and testing set following an 80/20 split.
+
+```{r}
+# Convert dfm to data frame for input into supervised ML pipeline
+tmpdata <- convert(dfm, to = "data.frame", docvars = NULL)
+
+# Drop doc_id variable
+tmpdata <- tmpdata[, -1]
+
+# Get sentiment labels
+human_labels <- dfm@docvars$sentiment
+
+# Join sentiment labels to data frame
+tmpdata <- as.data.frame(cbind(human_labels, tmpdata))
+
+## Create Train, Test and Validation Sets ##
+
+# Set seed for replicability
+set.seed(1234)
+
+# Randomly order labelled dataset
+tmpdata <- tmpdata[sample(nrow(tmpdata)),]
+
+# Determine cutoff point for 5% validation set
+split <- round(nrow(tmpdata) * 0.05)
+
+# Create validation set
+vdata <- tmpdata[1:split,]
+
+# Create labelled dataset minus validation set
+ldata <- tmpdata[(split + 1):nrow(tmpdata),]
+
+# Create training and test sets
+train_row_nums <- createDataPartition(ldata$human_labels, 
+                                      p=0.8, 
+                                      list=FALSE)
+
+Train <- ldata[train_row_nums, ] 
+Test <- ldata[-train_row_nums, ]
+```
+5% of the dataset was withheld for model validation. The remaining 95% was divided into a training set and testing set following an 80/20 split.  
+
+
+4.  Using these datasets, train a naive Bayes classifier with the `caret` library to predict review sentiment. Explain each step you take in the learning pipeline. Be sure to:
+    -   Evaluate the performance of the model in terms of classification accuracy of predictions in the testing set. Include a discussion of precision, recall and F1.
+    -   Explain in detail what steps were taken to help avoid overfitting.
+    -   Describe your parameter tuning.
+    -   Discuss the most predictive features of the dataset. (\*Hint: use `kwic` to provide a qualitative context)
+
+```{r}
+# Specify cross-validation conditions
+train_control <- trainControl(method = "repeatedcv",
+                              number = 5,
+                              repeats = 3,
+                              classProbs= TRUE, 
+                              summaryFunction = multiClassSummary,
+                              selectionFunction = "best",
+                              verboseIter = TRUE)
+
+## Train Model ##
+
+# View default parameter settings for Naive Bayes algorithm
+modelLookup(model = "naive_bayes")
+```
+```{r, eval=FALSE} 
+# Set number of cores for parallel processing
+cl <- makePSOCKcluster(3)
+registerDoParallel(cl)
+
+# Train model
+nb_train2 <- train(human_labels ~ ., 
+                  data = Train,  
+                  method = "naive_bayes", 
+                  metric = "F1",
+                  trControl = train_control,
+                  tuneGrid = expand.grid(laplace = c(0,1),
+                                         usekernel = c(TRUE, FALSE),
+                                         adjust = c(0.75, 1, 1.25, 1.5)),
+                  allowParallel= TRUE)
+
+# Stop parallel processing
+stopCluster(cl)
+```
+```{r}
+# Read in model
+nb_train2 <- readRDS("data/nb_train2")
+
+# Print cross-validation results
+print(nb_train2)
+
+## Evaluate Model Performance on Test Set ##
+
+# Generate prediction on Test set using training set model
+pred1 <- predict(nb_train2, newdata = Test)
+head(pred1) # first few predictions
+
+# Generate confusion matrix 
+confusionMatrix(reference = as.factor(Test$human_labels),
+                data = pred1, 
+                mode='everything', 
+                positive='neg')
+
+# Train final model
+nb_final2 <- train(human_labels ~ ., 
+                  data = ldata,  
+                  method = "naive_bayes", 
+                  trControl = trainControl(method = "none"),
+                  tuneGrid = data.frame(nb_train2$bestTune))
+
+print(nb_final2)
+
+# Generate prediction on Validation set using training set model
+pred2 <- predict(nb_final2, newdata = vdata)
+head(pred2) # first few predictions
+
+# Generate confusion matrix
+confusionMatrix(reference = as.factor(vdata$human_labels), 
+                data = pred2, 
+                mode='everything', 
+                positive='neg')
+
+# Check most predictive features
+head(high_key_features)
+
+# Run KWIC on most predictive features
+kwic_nb1 <- kwic(corp,
+                pattern = "great",
+                window = 5,
+                case_insensitive = TRUE)
+
+kwic_nb2 <- kwic(corp,
+                pattern = "delicious",
+                window = 5,
+                case_insensitive = TRUE)
+
+kwic_nb3 <- kwic(corp,
+                pattern = "love",
+                window = 5,
+                case_insensitive = TRUE)
+
+kwic_nb4 <- kwic(corp,
+                pattern = "amazing",
+                window = 5,
+                case_insensitive = TRUE)
+
+kwic_nb5 <- kwic(corp,
+                pattern = "best",
+                window = 5,
+                case_insensitive = TRUE)
+
+# Check 10 KWIC results for "great"
+head(kwic_nb1, 10)
+
+# Check 10 KWIC results for "delicious"
+head(kwic_nb2, 10)
+
+# Check 10 KWIC results for "love"
+head(kwic_nb3, 10)
+
+# Check 10 KWIC results for "amazing"
+head(kwic_nb4, 10)
+
+# Check 10 KWIC results for "best"
+head(kwic_nb5, 10)
+
+```
+- Performance
+
+The final model performed relatively well when predicting the classes of the validation set, achieving an accuracy score of 0.7. This means that out of all predictions made, 70% were correct. 
+
+In terms of precision, the model scored 0.69 whereas for recall it scored 0.88. This means that the model is better at predicting negative reviews (remembering we have set 'neg' as the positive class in our confusion matrix). The model correctly classified 88% of negative reviews. It's poorer performance in precision means that the model has a tendency to falsely classify positive reviews as negative.
+
+The model achieved an F1 score of 0.75. This metric is the harmonic average of precision and recall, and is therefore a good overall measure of performance particularly useful in imbalanced datasets. The model was tuned for F1 considering it's general use-case: we are not specifically interested in being better able to predict positive or negative reviews, we are aiming to get the best overall performance.
+
+- Overfitting
+
+To help avoid overfitting, the dataset was randomly shuffled before splitting into training, testing and validation sets. This was to account for the possibility that the original dataset followed some order with documents at the start/end having different feature probabilities.
+
+Cross-validation (repeated 5-fold) was also performed when training the model. This means that when training the model, the training dataset was randomly divided into 5 equally-sized subsets, 4 of which were used to train the model and 1 held back for validation. This process of training and validation is repeated so that each subset is used once for validation and performance metrics recorded for each iteration. The whole process is repeated three times and performance metrics are aggregated for each variation in model parameter tuning, allowing calculation of the best-performing, most generalisable model.
+
+- Parameter Tuning
+
+Testing was performed with models tuned on all possible combinations of the following:
+
+- Kernel Density Estimation: True, False 
+- Laplace Smoothing: 0, 1
+- Adjust: 0.75, 1, 1.25, 1.5
+
+- Most Predictive Features
+
+The most predictive features, based on lowest p-values for class keyness, were: "great","delicious","love","amazing","best". A KWIC analysis is provided above. There are some interesting divergences from the expected positive usage, with some of these used in a negative light (e.g. "not the best", "maybe not great", "I still love..."). 
+
+5.  Provide a similar analysis using a Support Vector Machine. However, irrespective of your settings for Question 4, for this exercise use a 5-fold cross-validation when training the model. Be sure to explain all steps involved as well as an evaluation of model performance. Which model is better, NB or SVM? Explain in detail.
+
+```{r}
+## Train SVM ###
+
+# Check model parameters
+modelLookup(model = "svmLinear")
+
+# Define parameter settings to iterate over
+tuneGrid = expand.grid(C = c(0.5, 1, 1.5))
+```
+```{r, eval=FALSE}
+# Allow parallel processing
+registerDoParallel(cl)
+
+# Train model
+svm_train2 <- train(human_labels ~ ., 
+                   data = Train,  
+                   method = "svmLinear", 
+                   metric = "F1",
+                   trControl = train_control,
+                   tuneGrid = expand.grid(C = c(0.5, 1, 1.5)),
+                   allowParallel= TRUE)
+
+# Stop parallel processing
+stopCluster(cl)
+```
+```{r}
+# Read in model
+svm_train2 <- readRDS("data/svm_train2")
+
+# Print cross-validation results
+print(svm_train2)
+
+# Generate prediction on test set using training set model
+pred_svm1 <- predict(svm_train2, newdata = Test)
+
+# Generate confusion matrix
+confusionMatrix(reference = as.factor(Test$human_labels), 
+                data = pred_svm1, 
+                mode='everything', 
+                positive='neg')
+```
+```{r, eval=FALSE}
+# Finalise model
+svm_final2 <- train(human_labels ~ ., 
+                   data = ldata,  
+                   method = "svmLinear", 
+                   trControl = trainControl(method = "none"),
+                   tuneGrid = data.frame(svm_train2$bestTune))
+```
+```{r}
+# Read in model
+svm_final2 <- readRDS("data/svm_final2")
+
+print(svm_final2)
+
+# Run prediction on validation set
+svm_pred2 <- predict(svm_final2, newdata = vdata)
+
+# Generate confusion matrix
+confusionMatrix(reference = as.factor(vdata$human_labels), 
+                data = svm_pred2, 
+                mode='everything', 
+                positive='neg')
+```
+- Performance
+
+The final SVM model performed better than the naive bayes model across almost all metrics. 
+
+When predicting the classes of the validation set, it achieved an accuracy score of 0.88. This means that out of all predictions made, 88% were correct. 
+
+In terms of precision, the model scored 0.89 and for recall it scored 0.87. This means that the model is slightly better at predicting positive reviews (remembering we have set 'neg' as the positive class in our confusion matrix). The model correctly classified 89% of positive reviews. It's slightly poorer performance in recall means that the model has a tendency to falsely classify negative reviews as positive more often than it tends to falsely classify positive reviews as negative.
+
+The model achieved an F1 score of 0.88. Considering our model's use case as a general purpose classifier, we would choose the SVM model over the Naive Bayes model as a better classifier. We would only choose the Naive Bayes model in the case that we were specifically concerned with capturing all instances of negative reviews (and we don't mind that some positive reviews are misclassified as negative). This is because it has a better performance in terms of recall.
+
+- Overfitting
+
+The same approach to avoiding overfitting was followed as with the naive bayes classifier.
+
+- Parameter Tuning
+
+Testing was performed with models tuned on different values of C, as below:
+
+- C: 0.5, 1, 1.5
+
+- Most Predictive Features
+
+As the same train/test/validation sets were used as for the naive bayes classifier, the same features were most predictive as above. 
+
+
+## Topic Modeling Breitbart News (50 points)
+
+In this section, we will analyze the thematic structure of a corpus of news articles from Breitbart News, a right-wing American news outlet. Employ a Structural Topic Model from the `stm` library to investigate the themes found within this corpus.
+
+First, bring in a sample of Breitbart articles from 2016 (n=5000):
+
+```{r, message=FALSE, warning=FALSE}
+# Set working directory and read in data
+setwd(getwd())
+data_unsup <- read.csv("./data/breitbart_2016_sample.csv", 
+                 stringsAsFactors=FALSE,
+                 encoding = "utf-8")
+
+# Load required libraries
+library(stm)
+library(lubridate)
+library(tidyverse)
+```
+
+1.  Process the text and generate a document-feature matrix. Be sure to remove unhelpful characters and tokens from the DFM and to also retain the original text for model validation. Remove tokens that occur in less than 20 documents. Justify your feature selection decisions.
+
+```{r}
+# Create corpus object
+corp_unsup <- corpus(data_unsup,
+                 text_field="content")
+
+# Add original text as docvar
+docvars(corp_unsup)$text <- texts(corp_unsup)
+
+# Inspect corpus attributes
+summary(corp_unsup,5)
+
+# Tokenise text and remove punctuation/symbols/URLs, etc.
+toks_unsup <- quanteda::tokens(corp_unsup, 
+                         include_docvars = TRUE,
+                         remove_numbers = TRUE,
+                         remove_punct = TRUE,
+                         remove_symbols = TRUE,
+                         remove_hyphens = TRUE,
+                         remove_separators = TRUE,
+                         remove_url = TRUE)
+
+# Convert tokens to lowercase
+toks_unsup <- tokens_tolower(toks_unsup)
+
+# Create list of stopwords and remove these from tokens, retaining whitespaces in place of removed stopwords
+stop_list <- stopwords("english")
+toks_unsup <- tokens_remove(toks_unsup, stop_list, padding=TRUE)
+
+# Identify bigram collocations
+bigrams_unsup <- textstat_collocations(toks_unsup, 
+                                 method = "lambda",
+                                 size = 2,
+                                 min_count = 10,
+                                 smoothing = 0.5)
+
+# Create list of bigrams of interest (z-score > 30)
+bigrams_unsup <- bigrams_unsup[bigrams_unsup$z > 30,]
+
+# Merge collocations with tokens and remove whitespaces
+toks_col_unsup <- tokens_compound(toks_unsup, pattern = bigrams_unsup)
+toks_col_unsup <- tokens_remove(toks_col_unsup, "")
+
+# Generate dfm and trim
+dfm_unsup <- dfm(toks_col_unsup)
+dfm_unsup <- dfm_trim(dfm_unsup, min_docfreq = 20)
+
+# Check top features of dfm
+topfeatures(dfm_unsup, 50)
+
+# Parse dates within dfm docvars
+dfm_unsup@docvars$date <- dmy(dfm_unsup@docvars$date)
+dfm_unsup@docvars$date_month <- floor_date(dfm_unsup@docvars$date, "month")
+```
+Standard, minimal pre-processing was performed: punctuation/symbols/URLs, etc., conversion to lowercase, identification of collocations, stopword removal, and trimming of dfm. This was mostly to reduce dimensionality. Stemming/lemmatisation was not performed as research indicates minimal pre-processing is preferable for topic models (Schofield et al. 2017). 
+
+2.  Convert the DFM into STM format and fit an STM model with `k=35` topics.
+
+```{r}
+# Convert dfm to stm
+stmdfm <- convert(dfm_unsup, to = "stm")
+```
+```{r, eval=FALSE}
+# Run stm algorithm
+modelFit <- stm(documents = stmdfm$documents,
+                vocab = stmdfm$vocab,
+                K = 35,
+                prevalence = ~ s(as.numeric(date_month)),
+                data = stmdfm$meta,
+                max.em.its = 500,
+                init.type = "Spectral",
+                seed = 1234,
+                verbose = TRUE)
+```
+
+3.  Interpret the topics generated by the STM model. Discuss the prevalence and top terms of each topic. Provide a list of the labels you have associated with each estimated topic. For each topic, justify your labelling decision. (Hint: You will want to cite excerpts from typical tweets of a given topic. Also, use the date variable to inform estimates of topic prevalence.).
+
+```{r}
+# Read in model
+stm_model <- readRDS("data/STM_model")
+
+# Check top terms per topic
+labelTopics(stm_model)
+
+# Plot topic prevalence and top terms per topic by FREX metric
+print(plot.STM(stm_model, 
+         type = "summary", 
+         labeltype = "frex",
+         text.cex = 0.4,
+         main = "Topic prevalence and top terms (FREX)"))
+
+# Plot topic prevalence and top terms per topic by Probability metric
+print(plot.STM(stm_model, 
+         type = "summary", 
+         labeltype = "prob",
+         text.cex = 0.4,
+         main = "Topic prevalence and top terms (Probability)"))
+
+## Check sample documents with a high probability of containing each topic ##
+
+# Check headline of articles with high probability for Topic 1
+findThoughts(stm_model,
+             texts = dfm_unsup@docvars$title,
+             topics = 1,
+             n = 10)
+
+# Check headline of articles with high probability for Topic 2
+findThoughts(stm_model,
+             texts = dfm_unsup@docvars$title,
+             topics = 2,
+             n = 10)
+
+# Check headline of articles with high probability for Topic 3
+findThoughts(stm_model,
+             texts = dfm_unsup@docvars$title,
+             topics = 3,
+             n = 10)
+
+# Check headline of articles with high probability for Topic 4
+findThoughts(stm_model,
+             texts = dfm_unsup@docvars$title,
+             topics = 4,
+             n = 10)
+
+# Check headline of articles with high probability for Topic 5
+findThoughts(stm_model,
+             texts = dfm_unsup@docvars$title,
+             topics = 5,
+             n = 10)
+
+# Check headline of articles with high probability for Topic 6
+findThoughts(stm_model,
+             texts = dfm_unsup@docvars$title,
+             topics = 6,
+             n = 10)
+
+# Check headline of articles with high probability for Topic 7
+findThoughts(stm_model,
+             texts = dfm_unsup@docvars$title,
+             topics = 7,
+             n = 10)
+
+# Check headline of articles with high probability for Topic 8
+findThoughts(stm_model,
+             texts = dfm_unsup@docvars$title,
+             topics = 8,
+             n = 10)
+
+# Check headline of articles with high probability for Topic 9
+findThoughts(stm_model,
+             texts = dfm_unsup@docvars$title,
+             topics = 9,
+             n = 10)
+
+# Check headline of articles with high probability for Topic 10
+findThoughts(stm_model,
+             texts = dfm_unsup@docvars$title,
+             topics = 10,
+             n = 10)
+
+# Check headline of articles with high probability for Topic 11
+findThoughts(stm_model,
+             texts = dfm_unsup@docvars$title,
+             topics = 11,
+             n = 10)
+
+# Check headline of articles with high probability for Topic 12
+findThoughts(stm_model,
+             texts = dfm_unsup@docvars$title,
+             topics = 12,
+             n = 10)
+
+# Check headline of articles with high probability for Topic 13
+findThoughts(stm_model,
+             texts = dfm_unsup@docvars$title,
+             topics = 13,
+             n = 10)
+
+# Check headline of articles with high probability for Topic 14
+findThoughts(stm_model,
+             texts = dfm_unsup@docvars$title,
+             topics = 14,
+             n = 10)
+
+# Check headline of articles with high probability for Topic 15
+findThoughts(stm_model,
+             texts = dfm_unsup@docvars$title,
+             topics = 15,
+             n = 10)
+
+# Check headline of articles with high probability for Topic 16
+findThoughts(stm_model,
+             texts = dfm_unsup@docvars$title,
+             topics = 16,
+             n = 10)
+
+# Check headline of articles with high probability for Topic 17
+findThoughts(stm_model,
+             texts = dfm_unsup@docvars$title,
+             topics = 17,
+             n = 10)
+
+# Check headline of articles with high probability for Topic 18
+findThoughts(stm_model,
+             texts = dfm_unsup@docvars$title,
+             topics = 18,
+             n = 10)
+
+# Check headline of articles with high probability for Topic 19
+findThoughts(stm_model,
+             texts = dfm_unsup@docvars$title,
+             topics = 19,
+             n = 10)
+
+# Check headline of articles with high probability for Topic 20
+findThoughts(stm_model,
+             texts = dfm_unsup@docvars$title,
+             topics = 20,
+             n = 10)
+
+# Check headline of articles with high probability for Topic 21
+findThoughts(stm_model,
+             texts = dfm_unsup@docvars$title,
+             topics = 21,
+             n = 10)
+
+# Check headline of articles with high probability for Topic 22
+findThoughts(stm_model,
+             texts = dfm_unsup@docvars$title,
+             topics = 22,
+             n = 10)
+
+# Check headline of articles with high probability for Topic 23
+findThoughts(stm_model,
+             texts = dfm_unsup@docvars$title,
+             topics = 23,
+             n = 10)
+
+# Check headline of articles with high probability for Topic 24
+findThoughts(stm_model,
+             texts = dfm_unsup@docvars$title,
+             topics = 24,
+             n = 10)
+
+# Check headline of articles with high probability for Topic 25
+findThoughts(stm_model,
+             texts = dfm_unsup@docvars$title,
+             topics = 25,
+             n = 10)
+
+# Check headline of articles with high probability for Topic 26
+findThoughts(stm_model,
+             texts = dfm_unsup@docvars$title,
+             topics = 26,
+             n = 10)
+
+# Check headline of articles with high probability for Topic 27
+findThoughts(stm_model,
+             texts = dfm_unsup@docvars$title,
+             topics = 27,
+             n = 10)
+
+# Check headline of articles with high probability for Topic 28
+findThoughts(stm_model,
+             texts = dfm_unsup@docvars$title,
+             topics = 28,
+             n = 10)
+
+# Check headline of articles with high probability for Topic 29
+findThoughts(stm_model,
+             texts = dfm_unsup@docvars$title,
+             topics = 29,
+             n = 10)
+
+# Check headline of articles with high probability for Topic 30
+findThoughts(stm_model,
+             texts = dfm_unsup@docvars$title,
+             topics = 30,
+             n = 10)
+
+
+# Check headline of articles with high probability for Topic 31
+findThoughts(stm_model,
+             texts = dfm_unsup@docvars$title,
+             topics = 31,
+             n = 10)
+
+# Check headline of articles with high probability for Topic 32
+findThoughts(stm_model,
+             texts = dfm_unsup@docvars$title,
+             topics = 32,
+             n = 10)
+
+# Check headline of articles with high probability for Topic 33
+findThoughts(stm_model,
+             texts = dfm_unsup@docvars$title,
+             topics = 33,
+             n = 10)
+
+# Check headline of articles with high probability for Topic 34
+findThoughts(stm_model,
+             texts = dfm_unsup@docvars$title,
+             topics = 34,
+             n = 10)
+
+# Check headline of articles with high probability for Topic 35
+findThoughts(stm_model,
+             texts = dfm_unsup@docvars$title,
+             topics = 35,
+             n = 10)
+
+# Check text of articles with high probability for Topic 26
+findThoughts(stm_model,
+             texts = dfm_unsup@docvars$text,
+             topics = 26,
+             n = 10)
+```
+Labels were attributed to each identified topic, informed by a review of terms with the highest probability, but primarily by terms with highest FREX (frequency and exclusivity - indicating terms that "distinguish" a topic). 
+
+For better interpretation, each topic was also explored in further detail by checking headlines and/or text for articles with a high probability of containing the topic, to get a better idea of the frequent terms when used in context, and topic labels were amended accordingly. 
+
+Topic prevalence over time was also plotted to explore any temporal patterns that might aid in interpretation. For example, interpretation of Topic 34 (GOP primary candidates) was helped by noting the high prevelance during Q1-2 of 2016, when primary elections were taking place.
+
+Below is a list of the final labels, ranked by overall topic prevalence as identified by the plots:
+
+- Topic 26: Interviews / direct speech
+- Topic 30: Britain / Brexit
+- Topic 19: Deadly incidents / terrorist attacks / shootings
+- Topic 27: Israel / Palestine
+- Topic 5: European immigration
+- Topic 32: Criminal trials
+- Topic 31: Economy
+- Topic 14: Supreme Court / Judiciary
+- Topic 25: Islamic extremist groups
+- Topic 34: Republican party primary candidates
+- Topic 8: Celebrities
+- Topic 29: Sports
+- Topic 20: Democratic election candidates
+- Topic 1: Social media platforms
+- Topic 10: Sectarianism / Religious persecution
+- Topic 24: Breitbart Texas correspondents
+- Topic 28: Hillary Clinton email controversy & investigation
+- Topic 23: Elections and polls
+- Topic 17: Obama-Trump interaction / transition of power
+- Topic 9: Syrian/Yemeni civil war
+- Topic 18: Gun control
+- Topic 22: Climate change
+- Topic 11: Tech industry
+- Topic 7: Fox news
+- Topic 33: International territorial disputes / border conflicts / South China Sea
+- Topic 4: BLM / Race relations / police brutality
+- Topic 12: Education
+- Topic 13: Gender & LGBT issues
+- Topic 35: Mexico
+- Topic 16: Latin American left-wing administrations
+- Topic 21: Public health
+- Topic 15: Warner Todd Huston articles / bathroom gender policy (possibly junk)
+- Topic 3: US armed forces
+- Topic 2: Trump rallies
+- Topic 6: Spanish language news
+
+*Note: a review of samples of full article texts was carried out for several more topics, but I did not include here to save space.
+
+4.  Topic model validation. Demonstrate and interpret the semantic and predictive validity of the model. Also discuss the quality of topics in terms of semantic coherence and top exclusivity. Discuss how you would show construct validity.
+
+```{r}
+## Predictive Validation: plot topic probabilities over time ##
+
+# Convert metadata to correct format
+stmdfm$meta$num_month <- month(stmdfm$meta$date)
+
+# Aggregate topic probability by month
+agg_theta <- setNames(aggregate(stm_model$theta,
+                                by = list(month = stmdfm$meta$num_month),
+                                FUN = mean),
+                      c("month", paste("Topic",1:35)))
+agg_theta <- pivot_longer(agg_theta, cols = starts_with("T")) 
+
+# Aggregate topic probability by month (Topic 1-7)
+agg_theta1 <- agg_theta[agg_theta$name %in% c("Topic 1", "Topic 2", "Topic 3",
+                                               "Topic 4", "Topic 5", "Topic 6",
+                                               "Topic 7"),]
+
+# Aggregate topic probability by month (Topic 8-14)
+agg_theta2 <- agg_theta[agg_theta$name %in% c("Topic 8", "Topic 9", "Topic 10",
+                                              "Topic 11", "Topic 12", "Topic 13",
+                                              "Topic 14"),]
+
+# Aggregate topic probability by month (Topic 15-21)
+agg_theta3 <- agg_theta[agg_theta$name %in% c("Topic 15", "Topic 16", "Topic 17",
+                                              "Topic 18", "Topic 19", "Topic 20",
+                                              "Topic 21"),]
+
+# Aggregate topic probability by month (Topic 22-28)
+agg_theta4 <- agg_theta[agg_theta$name %in% c("Topic 22", "Topic 23", "Topic 24",
+                                              "Topic 25", "Topic 26", "Topic 27",
+                                              "Topic 28"),]
+
+# Aggregate topic probability by month (Topic 29-35)
+agg_theta5 <- agg_theta[agg_theta$name %in% c("Topic 29", "Topic 30", "Topic 31",
+                                              "Topic 32", "Topic 33", "Topic 34",
+                                              "Topic 35"),]
+
+# Plot aggregated theta over time (Topic 1-7)
+print(ggplot(data = agg_theta1,
+       aes(x = month, y = value, group = name)) +
+  geom_smooth(aes(colour = name), se = FALSE) +
+  labs(title = "Topic prevalence (1-7)",
+       x = "Month",
+       y = "Average monthly topic probability") + 
+  theme_minimal())
+
+# Plot aggregated theta over time (Topic 8-14)
+print(ggplot(data = agg_theta2,
+       aes(x = month, y = value, group = name)) +
+  geom_smooth(aes(colour = name), se = FALSE) +
+  labs(title = "Topic prevalence (8-14)",
+       x = "Month",
+       y = "Average monthly topic probability") + 
+  theme_minimal())
+
+# Plot aggregated theta over time (Topic 15-21)
+print(ggplot(data = agg_theta3,
+       aes(x = month, y = value, group = name)) +
+  geom_smooth(aes(colour = name), se = FALSE) +
+  labs(title = "Topic prevalence (15-21)",
+       x = "Month",
+       y = "Average monthly topic probability") + 
+  theme_minimal())
+
+# Plot aggregated theta over time (Topic 22-28)
+print(ggplot(data = agg_theta4,
+       aes(x = month, y = value, group = name)) +
+  geom_smooth(aes(colour = name), se = FALSE) +
+  labs(title = "Topic prevalence (22-28)",
+       x = "Month",
+       y = "Average monthly topic probability") + 
+  theme_minimal())
+
+# Plot aggregated theta over time (Topic 29-35)
+print(ggplot(data = agg_theta5,
+       aes(x = month, y = value, group = name)) +
+  geom_smooth(aes(colour = name), se = FALSE) +
+  labs(title = "Topic prevalence (29-35)",
+       x = "Month",
+       y = "Average monthly topic probability") + 
+  theme_minimal())
+
+## Semantic validation: plot topic correlations
+topic_correlations <- topicCorr(stm_model)
+plot.topicCorr(topic_correlations,
+               vlabels = seq(1:ncol(stm_model$theta)),
+               vertex.color = "white",
+               main = "Topic correlations")
+
+## Topic quality: plot semantic coherence and exclusivity
+topicQuality(model = stm_model,
+             documents = stmdfm$documents,
+             xlab = "Semantic Coherence",
+             ylab = "Exclusivity",
+             labels = 1:ncol(stm_model$theta),
+             M = 15)
+
+# Check top words of outliers
+labelTopics(stm_model,
+            topics = c(8,15,22,28))
+
+# Check sample texts from topic 15
+findThoughts(stm_model,
+             texts = dfm_unsup@docvars$text,
+             topics = 15,
+             n = 5)
+```
+- Face Validity
+
+The topics appear to be distinct and well delineated, with a few exceptions that are somewhat ambiguous (Topic 24, 15). 
+
+- Predictive Validity
+
+The monthly mean value of theta for each topic was plotted to show topic probabilities over time. Certain topics would naturally be expected to be more prevalent over certain time periods. Below is a list of such topics:
+
+Topic 34 (Republican party primary candidates): expected to be more prevalent while primaries are ongoing Q1-2 2016; plots agree with this expectation.
+
+Topic 20 (Democratic election candidates): expected to be more prevalent in the run up to the presidential election Q3-4 2016; plots agree with this expectation.
+
+Topic 17 (Obama-Trump interaction / transition of power): expected to be more prevalent immediately following the presidential election Q4 2016: plots agree with this expectation.
+
+Topic 14 (Supreme Court / Judiciary): expected to be more prevalent around the nomination of new candidates (Q1 2016; Q1 2017); plots agree with this expectation.
+
+Topic 28 (Hillary Clinton email controversy & investigation): expected to be more prevalent in the run up to the presidential election Q4 2016 as an attempt to discredit democratic candidate; plots agree with this expectation.
+
+Topic 23 (Elections and polls): expected to be more prevalent around primary caucuses (Q1-2 2016) and presidential election (Q4 2016); plots agree with this expectation.
+
+The above examples demonstrate that the model has good predictive validity.
+
+- Semantic Validity
+
+The correlation plot shows that there are topics that are related to each other which tend to co-occur in documents. For example, Topic 18 (gun control) is correlated with Topic 19 (deadly incidents/terrorist attacks/shootings) and Topic 14 (supreme court / judiciary). This makes sense as articles related to gun control would also likely reference challenges to the second amendment and deadly shooting incidents.
+
+- Semantic Coherence & Topic Exclusivity
+
+The plot of topic quality shows that the majority of topics are clustered in the top right of the chart and therefore exhibit good semantic coherence and topic exclusivity. However, there are some notable outliers.
+
+Topics 8, 22 and 28 exhibit relatively low semantic coherence - the semantic relationships between the probable words of the topics are not as helpful for understanding and interpreting the topics. Probable terms for these topics were inspected for issues.
+
+Topic 8 (Celebrities): topic still has good face validity and top FREX terms are coherent.
+Topic 22 (Climate Change): top probable terms have poor semantic coherence but FREX terms are coherent.
+Topic 28 (Hillary Clinton email controversy & investigation): topic does have poor semantic coherence on the face of it, but model has identified a salient topic even though it does require some domain/prior knowledge to identify.
+
+Topic 15 exhibits relatively low exclusivity - its probable words are less unique to that topic.
+
+Topic 15 (Warner Todd Huston articles / bathroom gender policy): this was identified as a possible junk topic from the outset. Review of some sample texts shows that documents are mostly about transgender bathroom policies. There is some overlap with Topic 13 (Gender & LGBT issues) and it may be better to disregard this topic for analysis.
+
+5.  What insights can be gleaned about right-wing media coverage of the 2016 US election? What election-related topics were derived from the model? What interesting temporal patterns exist? Why might the prevalence of certain important topics vary over 2016? Provide evidence in support of your answers.
+
+Answer:
+
+Right-wing media coverage of the 2016 US election focussed heavily on Republican party candidates during the primaries, with this topic (topic 34) having about 3% overall probability and as much as 10% during Q1 2016. 
+
+By contrast, democratic candidates (topic 20) had only about 2-3% probability during the same period rising to ~4.5% in Q3-4 in the run up to the election date. Analysis of texts show that the majority of this coverage was negative and may have been an attempt to discredit the candidates.
+
+Supreme court judge appointment also featured (topic 14), with articles suggesting that appointment of SCOTUS nominee should wait until after the election as part of the presidential mandate.
+
+The model identified a topic around Hillary Clinton's email scandal and subsequent investigation (topic 28) and this was reported on most heavily on the run up to the election date (Q3-4 2016; ~4% probability), most likely as an attempt to disrupt her campaign.
+
+Interestingly, Trump rallies (topic 2) featured very low on the overall topic frequency at ~1.5%.
+
+Trump-Obama interaction / transition of power (topic 17), while having low overall topic frequency at ~2%, rose significantly in the period immediately after the election (Q4 2016) peaking at 5% probability.
+
+Reporting on deadly incidents (topic 19), which includes a high prevalence of terrorist attacks and shootings, rose sharply in the period immediately preceding the election date. Possibly to bolster the position of a candidate who's campaign was built on anti-immigration and a tough stance on crime?
+ 

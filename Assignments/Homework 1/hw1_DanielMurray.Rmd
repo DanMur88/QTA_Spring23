@@ -1,0 +1,373 @@
+---
+title: 'POP77022: Programming Exercise 1'
+author: "Daniel Murray"
+date: "Today's date"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Overview
+
+The first homework assignment will cover concepts and methods from Weeks 1 & 2 (basic string operations, corpus acquisition, text processing, textual statistics, dictionary methods). You are expected to provide your answers as embedded R code and/or text answers in the chunks provided in the homework RMarkdown file.
+
+For example:
+
+```{r}
+print("Print R code in code chunk.")
+```
+
+    Describe results and provide answers to conceptual and open-ended questions
+    in a plain code block like this one.
+
+**The programming exercise is worth 20% of your total grade. The questions sum to 100 points.**
+
+## Analysis of tweets during a political crisis
+
+We will start with a dataset that contains almost 900 tweets that were published by four central figures in American politics around the time of the onset of an impeachment inquiry: Pres. Donald Trump, Rudy Giuliani, Speaker of the House Rep. Nancy Pelosi, and Chair of the House Intelligence Committee Rep. Adam Schiff.
+
+The first step will be to read the spreadsheet of tweets into R and then use the `str` and `head` functions to describe the variables and contents of the dataset. For your convenience, I will provide code to import the spreadsheet (*Hint: be sure that the data folder is in the same folder as this homework RMarkdown file.*)
+
+```{r}
+setwd(getwd())
+data <- read.csv("./data/us_tweets.csv", 
+                 stringsAsFactors=FALSE,
+                 encoding = "utf-8")
+
+print(str(data))
+print(head(data))
+
+```
+
+### Question 1.0 (2 points)
+
+Print the number of tweets that are in this dataset.
+
+```{r}
+# Count number of tweets (observations) in dataset
+print(nrow(data))
+```
+
+### Question 1.1 (3 points)
+
+Create a new dataframe that only includes original tweets (remove retweets) and print the number of rows.
+
+```{r}
+# Remove retweets
+df <- data[data$is_retweet == "FALSE",]
+
+# Count number of original tweets
+print(nrow(df))
+```
+
+### Question 1.2 (20 points)
+
+Create a smaller dataframe that only includes tweets by Donald Trump.
+
+-   Print how many tweets by Trump are contained in the dataset?
+
+For the following print the number of instances as well as an example tweet:
+
+-   How many tweets include an exclamation mark?\
+-   In how many tweets did Trump mention words related to "winning"?
+-   "employment"?
+-   "immigration"?
+-   "hoax"?
+
+Make sure that you support your answers with code.
+
+(*Hints: be sure to use regular expressions when searching the tweets; also you might want to wrap your search term in between word anchor boundaries (`\\b`). For instance, for the term health: `"\\bhealth\\b"`*)
+
+```{r}
+# Create dataset containing only tweets by Donald Trump
+df_trump <- df[df$screen_name == "realDonaldTrump",]
+
+# Count number of tweets by Donald Trump and print
+print(paste("Number of tweets by Donald Trump:", as.character(nrow(df_trump))))
+
+# Count number of tweets containing exclamation mark and print
+print(paste("Number of tweets containing exclamation mark:", as.character(nrow(df_trump[grep('!', df_trump$text),]))))
+
+# Print example tweet containing exclamation mark
+print(df_trump[grep('!', df_trump$text),]$text[sample(1:as.character(nrow(df_trump[grep('!', df_trump$text),])),1)])
+
+# Count number of tweets containing words related to "winning" and print
+print(paste("Number of tweets containing words related to 'winning':", as.character(nrow(df_trump[grep('(?i)\\bwin|(?i)\\bvictor', df_trump$text),]))))
+
+# Print example tweet containing words related to "winning"
+print(df_trump[grep('(?i)\\bwin|(?i)\\bvictor', df_trump$text),]$text[sample(1:as.character(nrow(df_trump[grep('(?i)\\bwin|(?i)\\bvictor', df_trump$text),])),1)])
+
+# Count number of tweets containing words related to "employment" and print
+print(paste("Number of tweets containing words related to 'employment':", as.character(nrow(df_trump[grep('(?i)employ|(?i)\\bjobs', df_trump$text),]))))
+
+# Print random example tweet containing words related to "employment"
+print(df_trump[grep('(?i)employ|(?i)\\bjobs', df_trump$text),]$text[sample(1:as.character(nrow(df_trump[grep('(?i)employ|(?i)\\bjobs', df_trump$text),])),1)])
+
+# Count number of tweets containing words related to "immigration" and print
+print(paste("Number of tweets containing words related to 'immigration':", as.character(nrow(df_trump[grep('(?i)\\bimmigr', df_trump$text),]))))
+
+# Print random example tweet containing words related to "immigration"
+print(df_trump[grep('(?i)\\bimmigr', df_trump$text),]$text[sample(1:as.character(nrow(df_trump[grep('(?i)\\bimmigr', df_trump$text),])),1)])
+
+# Count number of tweets containing word "hoax" and print
+print(paste("Number of tweets containing word 'hoax':", as.character(nrow(df_trump[grep('(?i)\\bhoax\\b', df_trump$text),]))))
+
+# Print random example tweet containing word "hoax"
+print(df_trump[grep("(?i)\\bhoax\\b", df_trump$text),]$text[sample(1:as.character(nrow(df_trump[grep("(?i)\\bhoax\\b", df_trump$text),])),1)])
+
+```
+
+### Question 2 (75 points)
+
+Create a `corpus` and a `dfm` object with processed text (including collocations) using the dataframe generated in Question 1.1. With the generated `dfm` object perform the following tasks:
+
+1.  Create a frequency plot of the top 30 tokens for each politician.
+2.  Determine the "key" terms that Trump and Pelosi are more likely to tweet. Plot your results
+3.  Perform a keyword in context analysis using your `corpus` object for some of the most distinct keywords from both Trump and Pelosi. *Hint: remember to use the `phrase` function in the `pattern` argument of `kwic`*
+4.  Conduct a sentiment analysis of Trump's tweets using the Lexicon Sentiment Dictionary. Plot net sentiment over the entire sample period. Interpret the results. *Hint: you might want to use `lubridate` to generate a date object variable from the "created_at" variable before plotting. For example: `docvars(dfm, "date") <- lubridate::ymd_hms(dfm@docvars$created_at)`*
+5.  Justify each of your text processing decisions and interpret your results in the text field below. What can we learn about the political communication surrounding the political crisis based on the results from the above tasks?
+
+```{r}
+# Load required libraries
+library(quanteda)
+library(textstem)
+library(quanteda.textstats)
+library(ggplot2)
+library(quanteda.textplots)
+library(lubridate)
+
+# Create corpus from dataframe
+corpus <- corpus(df, 
+                 docid_field = "X",
+                 text_field = "text")
+
+# Inspect the corpus
+summary(corpus, 5)
+
+# Tokenise text and remove punctuation/symbols/URLs, etc.
+toks <- quanteda::tokens(corpus, 
+               include_docvars = TRUE,
+               remove_numbers = TRUE,
+               remove_punct = TRUE,
+               remove_symbols = TRUE,
+               remove_hyphens = TRUE,
+               remove_separators = TRUE,
+               remove_url = TRUE)
+
+# Convert tokens to lowercase
+toks <- tokens_tolower(toks)
+
+# Create list of stopwords and remove these from tokens, retaining whitespaces in place of removed stopwords
+stop_list <- stopwords("english")
+toks <- tokens_remove(toks, stop_list, padding=TRUE)
+
+# Identify trigram collocations and order by frequency
+trigrams <- textstat_collocations(toks, 
+                                  method = "lambda",
+                                  size = 3,
+                                  min_count = 3,
+                                  smoothing = 0.5)
+
+# Sort trigrams by frequency
+trigrams <- trigrams[order(trigrams$count, decreasing=TRUE),]
+trigrams$collocation
+
+# Filter for meaningful trigram collocations
+trigrams <- trigrams[c(1,2,3,4,5,6,7,8,9,11,12,15,16,18),]
+
+# Identify bigram collocations 
+bigrams <- textstat_collocations(toks, 
+                                 method = "lambda",
+                                 size = 2,
+                                 min_count = 3,
+                                 smoothing = 0.5)
+
+# Sort bigrams by frequency and inspect most/least frequent
+bigrams <- bigrams[order(-bigrams$count),]
+head(bigrams$collocation, 25)
+tail(bigrams$collocation, 25)
+
+# Create list of bigrams of interest (z-score > 3)
+bigrams <- bigrams[bigrams$z > 3,]
+
+# Compile a list of collocations to keep
+keep_coll_list <- rbind(trigrams, bigrams)
+
+# Merge collocations with tokens and remove whitespaces and ampersands
+toks_col <- tokens_compound(toks, keep_coll_list)
+toks_col <- tokens_remove(toks_col, c("","amp"))
+
+# Convert to document feature matrix
+dfm <- dfm(toks_col)
+
+# Check top features of dfm
+topfeatures(dfm, 50)
+
+# Remove features that are unlikely to add insight
+dfm <- dfm_remove(dfm, pattern=c("now", "people", "thank",
+                             "even","never", "one",
+                             "just", "time", "can",
+                             "must", "get","said",
+                             "like","many", "much"))
+
+# Check top features again
+topfeatures(dfm, 50)
+
+# Save document feature matrix
+saveRDS(dfm, "data/dfm")
+
+# Create frequency plot of top 30 tokens for Rudy Giuliani
+
+# Subset dfm for Rudy Giuliani's tweets only
+dfm_rg <- dfm_subset(dfm, screen_name == "RudyGiuliani")
+dfm_freq_rg <- textstat_frequency(dfm_rg, n = 30)
+
+# Sort features by frequency in descending order
+dfm_freq_rg$feature <- with(dfm_freq_rg, reorder(feature, -frequency))
+
+# Plot feature frequencies
+ggplot(dfm_freq_rg, aes(x = feature, y = frequency)) + ggtitle("Feature frequency of Rudy Giuliani's tweets") +
+       geom_point() + theme_minimal() + theme(axis.text.x = element_text(angle = 90, hjust = 1))
+
+# Create frequency plot of top 30 tokens for Nancy Pelosi
+
+# Subset dfm for Nancy Pelosi's tweets only
+dfm_np <- dfm_subset(dfm, screen_name == "SpeakerPelosi")
+dfm_freq_np <- textstat_frequency(dfm_np, n = 30)
+
+# Sort features by frequency in descending order
+dfm_freq_np$feature <- with(dfm_freq_np, reorder(feature, -frequency))
+
+# Plot feature frequencies
+ggplot(dfm_freq_np, aes(x = feature, y = frequency)) + ggtitle("Feature frequency of Nancy Pelosi's tweets") +
+       geom_point() + theme_minimal() + theme(axis.text.x = element_text(angle = 90, hjust = 1))
+
+# Create frequency plot of top 30 tokens for Adam Schiff
+
+# Subset dfm for Adam Schiff's tweets only
+dfm_as <- dfm_subset(dfm, screen_name == "RepAdamSchiff")
+dfm_freq_as <- textstat_frequency(dfm_as, n = 30)
+
+# Sort features by frequency in descending order
+dfm_freq_as$feature <- with(dfm_freq_as, reorder(feature, -frequency))
+
+# Plot feature frequencies
+ggplot(dfm_freq_as, aes(x = feature, y = frequency)) + ggtitle("Feature frequency of Adam Schiff's tweets") +
+       geom_point() + theme_minimal() + theme(axis.text.x = element_text(angle = 90, hjust = 1))
+
+# Create frequency plot of top 30 tokens for Donald Trump
+
+# Subset dfm for Donald Trump's tweets only
+dfm_dt <- dfm_subset(dfm, 
+                     screen_name == "realDonaldTrump")
+dfm_freq_dt <- textstat_frequency(dfm_dt, n = 30)
+
+# Sort features by frequency in descending order
+dfm_freq_dt$feature <- with(dfm_freq_dt, reorder(feature, -frequency))
+
+# Plot feature frequencies
+ggplot(dfm_freq_dt, aes(x = feature, y = frequency)) + ggtitle("Feature frequency of Donald Trump's tweets") +
+       geom_point() + theme_minimal() + theme(axis.text.x = element_text(angle = 90, hjust = 1))
+
+# Determine "key" terms that Nancy Pelosi is more likely to tweet
+# Calculate keyness and set the Nancy Pelosi as the target group
+keyness_stat_np <- textstat_keyness(dfm, target = docvars(dfm, "screen_name") == "SpeakerPelosi")
+
+# Plot keyness calculations
+textplot_keyness(keyness_stat_np, labelsize = 3)
+
+# Determine "key" terms that Donald Trump is more likely to tweet
+# Calculate keyness and set the Donald Trump as the target group
+keyness_stat_dt <- textstat_keyness(dfm, target = docvars(dfm, "screen_name") == "realDonaldTrump")
+
+# Plot keyness calculations
+textplot_keyness(keyness_stat_dt, labelsize = 3)
+
+
+# Perform a keyword in context analysis for Trump's most distinct keywords
+
+# Create variable to hold top 5 key features for Trump
+key_features_dt <- keyness_stat_dt$feature[1:5]
+
+# Replace underscores in collocation keywords with whitespace
+key_features_dt <- gsub("_"," ", key_features_dt)
+
+# Generate list of key words in context
+kwic_dt <- kwic(corpus,
+                pattern = phrase(key_features_dt),
+                window = 5,
+                case_insensitive = TRUE)
+
+# Reorder by keyword and print
+kwic_dt <- kwic_dt[order(kwic_dt$keyword)]
+print(kwic_dt)
+
+# Perform a keyword in context analysis for Pelosi's most distinct keywords
+
+# Create variable to hold top 5 key features for Pelosi
+key_features_np <- keyness_stat_np$feature[1:5]
+
+# Replace underscores in collocation keywords with whitespace
+key_features_np <- gsub("_"," ", key_features_np)
+
+# Generate list of key words in context
+kwic_np <- kwic(corpus,
+                pattern = phrase(key_features_np),
+                window = 5,
+                case_insensitive = TRUE)
+
+# Reorder by keyword and print
+kwic_np <- kwic_np[order(kwic_np$keyword)]
+print(kwic_np)
+
+# Conduct sentiment analysis of Trump's tweets
+
+# Generate date object variable in dfm
+docvars(dfm_dt, "date") <- lubridate::ymd_hms(dfm_dt@docvars$created_at)
+
+# Create dfm object of LSD words matching corpus
+dfm_dt_sent <- dfm_lookup(dfm_dt, dictionary =
+                         data_dictionary_LSD2015[1:2]) %>%
+  dfm_group(groups = date)
+
+head(dfm_dt_sent, 5)
+
+# Calculate proportion of negative words to original dfm
+docvars(dfm_dt_sent, "prop_negative") <- as.numeric(dfm_dt_sent[,1] / ntoken(dfm_dt_sent))
+
+# Calculate proportion of positive words to original dfm
+docvars(dfm_dt_sent, "prop_positive") <- as.numeric(dfm_dt_sent[,2] / ntoken(dfm_dt_sent))
+
+# Calculate net sentiment
+docvars(dfm_dt_sent, "net_sentiment") <- docvars(dfm_dt_sent, "prop_positive") - docvars(dfm_dt_sent, "prop_negative")
+
+# Plot net sentiment over time
+
+docvars(dfm_dt_sent) %>%
+  ggplot(aes(x = date, y = net_sentiment)) +
+  geom_smooth() +
+  labs(title = "Sentiment of Trump tweets over time", 
+       x = "date", y = "net sentiment")
+```
+
+    <Text Pre-processing Decisions>
+    
+    Standard pre-processing was performed at the time of tokenising text: removal of numbers/punctuation/symbols, lowercasing of text, and removal of stopwords (retaining padding to avoid false collocations). Whitespaces were removed after merging collocations to reduce dimensionality and noise. After converting to a document feature matrix, top features were inspected and those features that were deemed to not give add any insight were removed.
+    
+    Trigrams selection: a minimum frequency of 3 was chosen as collocations occurring less than 3 times were deemed unlikely to provide much insight. As this yielded only 20 trigrams in total, meaningful trigrams to retain were selected manually.
+    
+    Bigram selection: 3 was similary chosen as the minimum frequency threshold, however due to the high volume of bigrams identified meaningful bigrams were not chosen manually; a z-score of 3 was chosen as a statistical threshold and any bigram with a corresponding score above this was retained.
+    
+    Stemming/lemmatisation was not performed in order to maximise matching with the sentiment dictionary. This would not pose any issues in terms of computational efficiency, as dimensionality is already relatively low and the tasks to be performed are not particularly computationally intensive.
+    
+    <Analysis>
+    
+    From top feature analysis, Rudy Giuliani's tweets seem to focus heavily around allegations of corruption against Biden and his son in Ukraine and discrediting allegations against him/Trump and media reporting around it (i.e. "hearsay", "swamp media", "lie").
+    
+    From top feature analysis, Adam Shiff's tweets seem to focus heavily on Trump's actions.
+    
+    Top feature and key term analysis, in combination with key words in context analaysis, shows that Nancy Pelosi focussed on exposing Trump's wrongdoing (i.e. "#truthexposed", "#exposethetruth"), however she has a more balanced body of communications, being more likely than the others to tweet on other topics such as gun violence, hispanic heritage month and women's issues. She also uses her tweets to promote televised appearances (i.e. "tune in"). She was less likely, unsuprisingly, to tweet about Biden and corruption allegations.  
+    
+    Top feature and key term analysis, in combination with key words in context analysis, suggests that Donald Trump was most likely to tweet about his achievements in office as president. He is more likely than the others to make accusations of false allegations against him by his political rivals (i.e. "witch hunt") and to try to discredit media reporting (i.e. "fake news"). He is less likely to talk directly about Biden, referring instead to "democrats" as a whole. Sentiment analysis shows that his tweets had 50% positive net sentiment at the beginning of the period, growing steadily more negative over time and ending the period at approx. 10% negative net sentiment.

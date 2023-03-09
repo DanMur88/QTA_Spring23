@@ -133,13 +133,20 @@ ggplot(data = NULL) +
 # it as a new column to the corpus_sum object.
 ?textstat_readability
 
+corpSum22$fk <- textstat_readability(corp22,
+                           measure = "Flesch.Kincaid")
+
+
+
 # Once you've done that, try plotting the F-K scale according to byline.
 # Let's compare three correspondents: Luke Harding, Jennifer Rankin and
 # Julian Borger. Look at the code below and fill in the necessary arguments.
 
 corpSum22 %>%
-  filter(grepl(pattern, col)) %>%
-  group_by(grp = str_extract(col, pattern)) %>%
+  filter(grepl("Luke Harding|Jennifer Rankin|Julian Borger", 
+               byline, ignore.case=TRUE)) %>%
+  group_by(grp = str_extract(byline, 
+                             "Luke Harding|Jennifer Rankin|Julian Borger")) %>%
   summarise(av = mean(fk$Flesch.Kincaid)) %>%
   ggplot(aes(x = reorder(grp, -av), y = av)) +
   geom_col() +
@@ -179,8 +186,8 @@ colc23 <- textstat_collocations(toks23, size = 2, min_count = 10)
 # This time, let's look at the z scores to see what cut-off to use
 ?textstat_collocations
 
-toks22 <- tokens_compound(toks22, pattern = colc22["pick a z score"])
-toks23 <- tokens_compound(toks23, pattern = colc23["pick a z score"])
+toks22 <- tokens_compound(toks22, pattern = colc22[colc22["z"] >= 17.5,])
+toks23 <- tokens_compound(toks23, pattern = colc23[colc23["z"] >= 16,])
 
 # Remove whitespace
 toks22 <- tokens_remove(quanteda::tokens(toks22), "") 
@@ -196,11 +203,35 @@ toks23 <- tokens_wordstem(toks23)
 # this time: create a dfm for both tokens objects, then go back to
 # remove the necessary stopwords.
 
+dfm22 <- dfm(toks22)
+dfm23 <- dfm(toks23)
+  
+topfeatures(dfm22)
+topfeatures(dfm23)
+
+toks22 <- tokens_remove(toks22, c("said",
+                                  "say",
+                                  "also",
+                                  "ukrain",
+                                  "ukrainian",
+                                  "russia",
+                                  "russian"),
+                        valuetype = "fixed")
+
+toks23 <- tokens_remove(toks23, c("said",
+                                  "say",
+                                  "also",
+                                  "ukrain",
+                                  "ukrainian",
+                                  "russia",
+                                  "russian"),
+                        valuetype = "fixed")
 
 #### 4. Statistics with the dfm 
 # Let's compare the relative frequency of features from our two years.
 dfm22_frq <- textstat_frequency(dfm22, n = 20)
 dfm23_frq <- textstat_frequency(dfm23, n = 20)
+
 
 dfm22_frq %>%
   ggplot(aes(x = reorder(feature, frequency), y = frequency)) +
