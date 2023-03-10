@@ -203,13 +203,13 @@ plot.STM(stm_model_guar1,
 # Check topic headlines
 findThoughts(stm_model_guar1,
              texts = dfm_guar@docvars$headline,
-             topics = 29,
+             topics = 35,
              n = 20)
 
 # Check topic articles
 findThoughts(stm_model_guar1,
              texts = dfm_guar@docvars$text,
-             topics = 29,
+             topics = 35,
              n = 20)
 
 ## Predictive validity using time series data ##
