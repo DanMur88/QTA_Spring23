@@ -67,8 +67,9 @@ stri_replace_first(corpus_guar2,
                    replacement = "",
                    regex = "^.+?\"")
 
-# Add original text as docvar
+# Add original text and publication month as docvar
 docvars(corpus_guar2)$text <- texts(corpus_guar2)
+corpus_guar2$month <- floor_date(df2$first_publication_date, "month")
 
 # Inspect corpus attributes
 summary(corpus_guar2,5)
@@ -179,9 +180,6 @@ saveRDS(kResult, "data/kResult")
 # Plot kResult
 plot(kResult)
 
-# Convert dfm to stm
-stmdfm_guar2 <- convert(dfm_guar2, to = "stm")
-
 # Run stm algorithm for 20 topics (k=20)
 STM_model_guar2 <- stm(documents = stmdfm_guar2$documents,
                      vocab = stmdfm_guar2$vocab,
@@ -219,13 +217,13 @@ plot.STM(STM_model_guar2,
 # Check topic headlines
 findThoughts(STM_model_guar2,
              texts = dfm_guar2@docvars$headline,
-             topics = 20,
-             n = 20)
+             topics = 7,
+             n = 100)
 
 # Check topic articles
 findThoughts(STM_model_guar2,
              texts = dfm_guar2@docvars$text,
-             topics = 10,
+             topics = 20,
              n = 20)
 
 ## Predictive validity using time series data ##
@@ -327,3 +325,221 @@ topicQuality(model = STM_model_guar2,
              ylab = "Exclusivity",
              labels = 1:ncol(STM_model_guar2$theta),
              M = 15)
+
+
+## Daily number of tokens ##
+
+# Get summary information on entire corpus
+token_stats <- summary(corpus_guar2, n = nrow(docvars(corpus_guar2)))
+token_stats$first_publication_date <- date(token_stats$first_publication_date)
+
+# Print variable names in corpus summary object
+names(token_stats)
+
+# Sum of tokens by date
+daily_tokens <- token_stats %>%
+  group_by(first_publication_date) %>%
+  summarize(token_sum = sum(Tokens))
+
+# Create date variable from datestamp variable
+daily_tokens$date <- date(daily_tokens$first_publication_date)
+
+# Plot daily number of tokens
+ggplot(data=daily_tokens, aes(x=date, y=token_sum, group = 1)) + 
+  geom_point() + geom_smooth() + theme_minimal()
+
+# Plot monthly number of articles
+plot(table(floor_date(token_stats$first_publication_date, "month")))
+
+## KWIC Analysis ##
+
+# Hu Jintao
+kwic1 <- kwic(corpus_guar2,
+                pattern = phrase("Hu Jintao"),
+                window = 10,
+                case_insensitive = TRUE)
+
+print(kwic1)
+
+# Jiang Zemin
+kwic2 <- kwic(corpus_guar2,
+              pattern = phrase("Jiang Zemin"),
+              window = 10,
+              case_insensitive = TRUE)
+
+print(kwic2)
+
+
+# Genocide
+kwic3 <- kwic(corpus_guar2,
+              pattern = phrase("Genocide"),
+              window = 10,
+              case_insensitive = TRUE)
+
+print(kwic3)
+
+
+# Social Credit
+kwic4 <- kwic(corpus_guar2,
+              pattern = phrase("social credit"),
+              window = 10,
+              case_insensitive = TRUE)
+
+print(kwic4)
+
+
+# Surveillance
+kwic5 <- kwic(corpus_guar2,
+              pattern = phrase("surveillance"),
+              window = 10,
+              case_insensitive = TRUE)
+
+print(kwic5)
+
+# Protest
+kwic6 <- kwic(corpus_guar2,
+              pattern = "protest*",
+              valuetype = "glob",
+              window = 10,
+              case_insensitive = TRUE)
+
+print(kwic6) 
+
+# Centralisation
+kwic7 <- kwic(corpus_guar2,
+              pattern = "centralisation",
+              window = 10,
+              case_insensitive = TRUE)
+
+print(kwic7)
+
+# Authoritarian
+kwic8 <- kwic(corpus_guar2,
+              pattern = "authoritarian",
+              window = 10,
+              case_insensitive = TRUE)
+
+print(kwic8) 
+
+# Common Prosperity
+kwic9 <- kwic(corpus_guar2,
+              pattern = phrase("common prosperity"),
+              window = 10,
+              case_insensitive = TRUE)
+
+print(kwic9)
+
+# Chinese Economy
+kwic10 <- kwic(corpus_guar2,
+              pattern = phrase("chinese economy"),
+              window = 10,
+              case_insensitive = TRUE)
+
+print(kwic10) 
+
+# China's Economy
+kwic11 <- kwic(corpus_guar2,
+               pattern = phrase("china's economy"),
+               window = 10,
+               case_insensitive = TRUE)
+
+print(kwic11)
+
+# Security
+kwic12 <- kwic(corpus_guar2,
+               pattern = phrase("security"),
+               window = 10,
+               case_insensitive = TRUE)
+
+print(kwic12) 
+
+# Tiktok
+kwic13 <- kwic(corpus_guar2,
+               pattern = phrase("Tiktok"),
+               window = 10,
+               case_insensitive = TRUE)
+
+print(kwic13)
+
+# App
+kwic14 <- kwic(corpus_guar2,
+               pattern = phrase("app"),
+               window = 10,
+               case_insensitive = TRUE)
+
+print(kwic14)
+
+# AI
+kwic15 <- kwic(corpus_guar2,
+               pattern = phrase("AI"),
+               window = 10,
+               case_insensitive = TRUE)
+
+print(kwic15)
+
+# Semiconductors
+kwic16 <- kwic(corpus_guar2,
+               pattern = phrase("semiconductor*"),
+               valuetype = "glob",
+               window = 10,
+               case_insensitive = TRUE)
+
+print(kwic16)
+
+# Technology
+kwic17 <- kwic(corpus_guar2,
+               pattern = phrase("tech*"),
+               valuetype = "glob",
+               window = 10,
+               case_insensitive = TRUE)
+
+print(kwic17)
+
+# Belt and Road
+kwic18 <- kwic(corpus_guar2,
+               pattern = phrase("belt and road"),
+               window = 10,
+               case_insensitive = TRUE)
+
+print(kwic18)
+
+# Debt trap
+kwic19 <- kwic(corpus_guar2,
+               pattern = phrase("debt trap"),
+               window = 10,
+               case_insensitive = TRUE)
+
+print(kwic19)
+
+# Debt
+kwic20 <- kwic(corpus_guar2,
+               pattern = phrase("debt"),
+               window = 10,
+               case_insensitive = TRUE)
+
+print(kwic20)
+
+
+## Term frequency over time
+
+# Term frequency for genocide
+tmp <- tibble(
+  word = as.matrix(dfm_guar2)[,"genocide"], 
+  date = dfm_guar2$date_month, 
+  ## calculate the total number of words in each document
+  total = rowSums(dfm_guar2)
+)
+
+tmp <- tmp %>% 
+  ## group by year-month
+  group_by(date) %>% 
+  ## calculate the sum of the instances of "wonderfully" 
+  ## divided by the sum of the total words across all 
+  ## documents in the month
+  summarise(prop = sum(word)/sum(total))
+
+## make a plot.
+ggplot(tmp, aes(x=date, y=prop)) + 
+  geom_line() + 
+  labs(x= "Date", y="Genocide/Total # Words")
+       
